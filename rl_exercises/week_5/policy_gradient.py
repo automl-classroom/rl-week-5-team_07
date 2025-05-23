@@ -72,6 +72,8 @@ class Policy(nn.Module):
         # TODO: Define two linear layers: self.fc1 and self.fc2
         # self.fc1 should map from self.state_dim to hidden_size
         # self.fc2 should map from hidden_size to self.n_actions
+        self.fc1 = nn.Linear(self.state_dim, hidden_size)
+        self.fc2 = nn.Linear(hidden_size, self.n_actions)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
@@ -90,9 +92,12 @@ class Policy(nn.Module):
         # TODO: Apply fc1 followed by ReLU (Flatten input if needed)
         # TODO: Apply fc2 to get logits
         # TODO: Return softmax over logits along the last dimension
-        pass
-
-
+        if x.dim() == 1:
+            x = x.unsqueeze(0)
+        x = torch.relu(self.fc1(x))
+        logits = self.fc2(x)
+        return torch.softmax(logits, dim=-1)
+        
 class REINFORCEAgent(AbstractAgent):
     """
     REINFORCE agent performing on-policy Monte Carlo policy gradient updates.
@@ -162,9 +167,17 @@ class REINFORCEAgent(AbstractAgent):
             Contains 'log_prob' if in training mode; empty if evaluating.
         """
         # TODO: Pass state through the policy network to get action probabilities
+        state_ = torch.tensor(state, dtype=torch.float32)
+        probabilities = self.policy(state_)
         # If evaluate is True, return the action with highest probability
+        if evaluate:
+            action = torch.argmax(probabilities).item()
+            return action, {}
         # Otherwise, sample from the action distribution and return the log-probability as a key in the dictionary (Hint: use torch.distributions.Categorical)
-        return 0, {}  # Placeholder return value
+        else:
+            distribution = torch.distributions.Categorical(probabilities)
+            action = distribution.sample()
+            return action.item(), {"log_prob": distribution.log_prob(action)}
 
     def compute_returns(self, rewards: List[float]) -> torch.Tensor:
         """
@@ -182,11 +195,17 @@ class REINFORCEAgent(AbstractAgent):
         """
 
         # TODO: Initialize running return R = 0
+        returns_list = []
+        R = 0
         # TODO: Iterate over rewards and compute the return-to-go:
         #       - Update R = r + gamma * R
         #       - Insert R at the beginning of the returns list
+        for r in reversed(rewards):
+            R = r + self.gamma * R
+            returns_list.insert(0, R)
         # TODO: Convert the list of returns to a torch.Tensor and return
-        pass
+        return torch.tensor(returns_list, dtype=torch.float32)
+        
 
     def update_agent(
         self,
@@ -216,7 +235,8 @@ class REINFORCEAgent(AbstractAgent):
 
         # TODO: Normalize returns with mean and standard deviation,
         # and add 1e-8 to the denominator to avoid division by zero
-        norm_returns = returns_t
+        norm_returns = (returns_t - returns_t.mean()) / (returns_t.std(unbiased=False) + 1e-8)
+        #norm_returns = returns_t
 
         lp_tensor = torch.stack(log_probs)
         loss = -torch.sum(lp_tensor * norm_returns)
@@ -280,11 +300,21 @@ class REINFORCEAgent(AbstractAgent):
         self.policy.eval()
         returns: List[float] = []  # noqa: F841
         # TODO: rollout num_episodes in eval_env and aggregate undiscounted returns across episodes
-
+        for _ in range(num_episodes):
+            # like in train function
+            state, _ = eval_env.reset()
+            done = False
+            episode_return = 0
+            while not done:
+                action, _ = self.predict_action(state, evaluate=True)
+                state, reward, term, trunc, _ = eval_env.step(action)
+                done = term or trunc 
+                episode_return += reward # accumulate undiscounted returns
+            returns.append(episode_return)
         self.policy.train()  # Set back to training mode
 
         # TODO: Return the mean and std of the returns across episodes
-        return 0.0, 0.0
+        return float(np.mean(returns)), float(np.std(returns))
 
     def train(
         self,
